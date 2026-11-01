@@ -1,0 +1,44 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: terangapass
+      POSTGRES_USER: terangapass_owner
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Define POSTGRES_PASSWORD dans .env}
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:?Define POSTGRES_APP_PASSWORD dans .env}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./server/postgres-init/10-create-app-role.sql:/docker-entrypoint-initdb.d/10-create-app-role.sql:ro
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U terangapass_owner -d terangapass"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [internal]
+
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://terangapass:${POSTGRES_APP_PASSWORD}@db:5432/terangapass
+      PRIVATE_UPLOAD_DIR: /var/lib/terangapass/private
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - private_uploads:/var/lib/terangapass/private
+    networks: [internal]
+
+volumes:
+  db_data:
+  private_uploads:
+
+networks:
+  internal:
+    internal: true
