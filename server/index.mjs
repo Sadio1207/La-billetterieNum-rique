@@ -110,6 +110,16 @@ function asyncRoute(handler) {
 function reject(res, status, message) {
   return res.status(status).json({ error: message });
 }
+// --- MAINTENANCE COMPTES DE PAIEMENT (WAVE & ORANGE MONEY) ---
+// Récupère les numéros et libellés configurés dans .env pour chaque mode de paiement.
+// Si un numéro est absent, le serveur bloque les réservations pour ce mode avec un statut 503.
+// En cas de mise à jour des numéros dans .env, recharger avec : docker compose up -d app
+//
+// [ÉVOLUTION API DIRECTE] :
+// Lorsque vous aurez une API Wave (Checkout API) et/ou Orange Money (Web Payment API) :
+// Au lieu de retourner un simple numéro de téléphone pour un transfert manuel, cette fonction
+// ou le service de paiement initialisera la session de paiement auprès de l'API Wave ou Orange Money
+// et retournera une URL de paiement direct (checkout_url / wave_launch_url).
 function paymentConfig(method) {
   if (method === "wave") return { label: cleanText(process.env.PAYMENT_WAVE_LABEL), number: cleanText(process.env.PAYMENT_WAVE_NUMBER) };
   if (method === "orange_money") return { label: cleanText(process.env.PAYMENT_ORANGE_MONEY_LABEL), number: cleanText(process.env.PAYMENT_ORANGE_MONEY_NUMBER) };
@@ -224,12 +234,17 @@ async function initDatabase() {
     await migrationClient.query("SELECT pg_advisory_unlock(8347261901)").catch(() => {});
     migrationClient.release();
   }
+  // --- MAINTENANCE COMPTE ADMINISTRATEUR INITIAL ---
+  // Si la table 'organizers' est vide (premier démarrage), on crée le compte admin
+  // à partir de INITIAL_ADMIN_EMAIL (ex: terangapass@billetterie.sn) et INITIAL_ADMIN_PASSWORD (ex: terangaPlus!).
+  // Le mot de passe est haché avec Argon2id. Si vous devez réinitialiser ce mot de passe
+  // ultérieurement, mettez directement à jour le champ 'password_hash' de la table 'organizers'.
   const count = await pool.query("SELECT count(*)::int AS count FROM organizers");
   if (count.rows[0].count === 0) {
     const email = cleanText(process.env.INITIAL_ADMIN_EMAIL, 254).toLowerCase();
     const password = process.env.INITIAL_ADMIN_PASSWORD || "";
-    if (!validEmail(email) || password.length < 16 || /^(change|remplacer|admin|password)/i.test(password)) {
-      throw new Error("Premiere initialisation : definissez INITIAL_ADMIN_EMAIL et un INITIAL_ADMIN_PASSWORD unique de 16 caracteres minimum.");
+    if (!validEmail(email) || password.length < 10 || /^(change|remplacer|admin|password)/i.test(password)) {
+      throw new Error("Premiere initialisation : definissez INITIAL_ADMIN_EMAIL et un INITIAL_ADMIN_PASSWORD unique de 10 caracteres minimum.");
     }
     const hash = await argon2.hash(password, { type: argon2.argon2id });
     await pool.query("INSERT INTO organizers (id, email, password_hash, role) VALUES ($1, $2, $3, 'admin')", [randomUUID(), email, hash]);
@@ -316,6 +331,11 @@ app.get("/api/bootstrap", asyncRoute(async (_req, res) => {
 
 app.post("/api/orders", (_req, res) => reject(res, 410, "Ce parcours a ete remplace par la reservation avant paiement."));
 
+// --- AUTHENTIFICATION ESPACE ORGANISATEUR ---
+// Route : POST /api/admin/login
+// Paramètres attendus (JSON) : { email, password }
+// Vérifie l'e-mail et le mot de passe (via Argon2id) contre la table 'organizers'.
+// Inclut un rate limiter (12 essais / 15 min) et un verrouillage par IP contre les attaques par force brute.
 app.post("/api/admin/login", loginLimiter, asyncRoute(async (req, res) => {
   const email = cleanText(req.body?.email, 254).toLowerCase();
   const password = typeof req.body?.password === "string" ? req.body.password : "";
@@ -468,6 +488,13 @@ app.post("/api/reservations", asyncRoute(async (req, res) => {
     prooflessOrder = inserted.rows[0];
     await client.query("COMMIT");
     const fullOrder = await getOrderPayload(pool, prooflessOrder);
+
+    // [ÉVOLUTION API DIRECTE - CRÉATION DE SESSION DE PAIEMENT] :
+    // Lorsqu'une API Wave ou Orange Money est branchée :
+    // 1. Appelez l'API Wave (ex: POST https://api.wave.com/v1/checkout/sessions) ou Orange Money WebPay
+    //    avec { amount: total, currency: 'XOF', client_reference: reference, success_url, cancel_url }.
+    // 2. Récupérez le 'checkout_url' ou 'wave_launch_url' renvoyé par l'API.
+    // 3. Renvoyez { order: fullOrder, checkoutUrl } au client pour qu'il soit redirigé directement vers l'app de paiement.
     res.status(201).json({ order: fullOrder, payment: { method, ...account, accountName: cleanText(process.env.PAYMENT_RECEIVER_NAME), expiresAt: holdUntil } });
   } catch (error) {
     await client.query("ROLLBACK").catch(() => {});
@@ -485,6 +512,29 @@ app.post("/api/reservations", asyncRoute(async (req, res) => {
     client.release();
   }
 }));
+
+// ==============================================================================
+// [ÉVOLUTION API DIRECTE - RÉCEPTION AUTOMATIQUE DES PAIEMENTS VIA WEBHOOK]
+// ==============================================================================
+// Une fois les APIs Wave / Orange Money branchées, ce parcours manuel de preuve
+// (upload JPEG ci-dessous) et de validation organisateur (route decision plus bas)
+// sera remplacé par des webhooks automatiques :
+//
+// 1. Ajouter les routes d'écoute Webhook :
+//    app.post("/api/webhooks/wave", express.raw({ type: "application/json" }), async (req, res) => {
+//      // a) Vérifier la signature HMAC avec WAVE_WEBHOOK_SECRET
+//      // b) Si type === "checkout.session.completed" :
+//      //    - Récupérer event.data.client_reference (référence commande)
+//      //    - Exécuter la transaction d'émission automatique des billets :
+//      //      * UPDATE orders SET status = 'paid', transaction_reference = event.data.id
+//      //      * UPDATE ticket_tiers SET reserved = reserved - qty, sold = sold + qty
+//      //      * INSERT INTO tickets (codes uniques TGP-...)
+//      // c) Retourner res.status(200).send("OK");
+//    });
+//
+// 2. Faire de même pour Orange Money (WebPay IPN / Notification).
+// Les billets sont alors disponibles immédiatement pour le client dès la confirmation de l'API.
+// ==============================================================================
 
 app.post("/api/orders/:reference/proof", proofUpload.single("proof"), asyncRoute(async (req, res) => {
   const reference = cleanText(req.params.reference, 64).toUpperCase();

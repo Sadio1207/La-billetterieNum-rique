@@ -1511,6 +1511,22 @@
             return;
           }
           currentOrder = reservation.order;
+
+          // ==============================================================================
+          // [ÉVOLUTION API DIRECTE - REDIRECTION IMMÉDIATE VERS WAVE / ORANGE MONEY]
+          // ==============================================================================
+          // Lorsque l'API Wave Checkout ou Orange Money WebPay sera connectée au serveur :
+          // Le serveur renverra directement une URL de paiement dans reservation.payment.checkoutUrl.
+          // Il suffira de décommenter la ligne ci-dessous pour rediriger le client instantanément :
+          //
+          // if (reservation.payment && reservation.payment.checkoutUrl) {
+          //   window.location.href = reservation.payment.checkoutUrl;
+          //   return;
+          // }
+          //
+          // Cela supprimera totalement l'étape manuelle ci-dessous (saisie ID + capture JPEG).
+          // ==============================================================================
+
           const instructions = currentOrder.paymentInstructions || {};
           reservationDetails.innerHTML = '<div><strong>Réservation ' + esc(currentOrder.ref) + ' créée.</strong><br>Effectuez le transfert avant ' + esc(UI.dateTime(instructions.expiresAt)) + ' vers ' + esc(instructions.label || (selectedMethod === "wave" ? "Wave" : "Orange Money")) + ' — compte ' + esc(instructions.accountName || "") + ' — <span class="mono">' + esc(instructions.number || "Non configuré") + '</span>. Montant : <strong>' + UI.money(currentOrder.total) + '</strong>.</div>';
           reservationDetails.classList.remove("is-hidden");

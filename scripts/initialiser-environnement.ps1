@@ -29,12 +29,12 @@ function ConvertFrom-SecureInput([Security.SecureString]$Value) {
     }
 }
 
-$securePassword = Read-Host 'Mot de passe admin (16 caracteres minimum)' -AsSecureString
+$securePassword = Read-Host 'Mot de passe admin (10 caracteres minimum)' -AsSecureString
 $secureConfirmation = Read-Host 'Confirmez le mot de passe admin' -AsSecureString
 $adminPassword = ConvertFrom-SecureInput $securePassword
 $confirmation = ConvertFrom-SecureInput $secureConfirmation
-if ($adminPassword.Length -lt 16 -or $adminPassword -notmatch '^[A-Za-z0-9!@._%+-]+$') {
-    throw 'Utilisez au moins 16 caracteres parmi les lettres, chiffres et ! @ . _ % + -.'
+if ($adminPassword.Length -lt 10 -or $adminPassword -notmatch '^[A-Za-z0-9!@._%+-]+$') {
+    throw 'Utilisez au moins 10 caracteres parmi les lettres, chiffres et ! @ . _ % + -.'
 }
 if ($adminPassword -cne $confirmation) {
     throw 'Les deux mots de passe ne correspondent pas.'
